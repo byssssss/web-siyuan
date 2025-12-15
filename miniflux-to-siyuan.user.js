@@ -1,412 +1,1015 @@
 // ==UserScript==
-// @name         Miniflux 文章剪藏到思源笔记
+// @name         网页剪藏工具 Pro (整合版)
 // @namespace    http://tampermonkey.net/
-// @version      2.1.1
-// @description  在Miniflux页面上添加按钮，将文章一键剪藏到思源笔记。请在设置中配置你的Miniflux和思源信息。
+// @version      5.0
+// @description  完整整合版网页剪藏工具，内置内容提取和AI标签生成，支持自定义标签、选择笔记本和现代化UI
 // @author       You
 // @match        *://*/*
-// @grant        GM_xmlhttpRequest      // 授权：使用 Tampermonkey 的特权网络请求 API，可绕过网页的跨域限制 (CSP)。
-// @grant        GM_getValue           // 授权：从 Tampermonkey 的本地存储中读取数据。
-// @grant        GM_setValue           // 授权：向 Tampermonkey 的本地存储中写入数据。
-// @grant        GM_registerMenuCommand // 授权：在 Tampermonkey 的菜单中注册一个自定义命令。
-// @grant        GM_addStyle           // 授权：向页面注入 CSS 样式。
-// @require      https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js // 依赖：在脚本运行前，从 CDN 加载 Turndown.js 库，用于专业的 HTML 到 Markdown 转换。
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_addStyle
+// @require      https://cdn.jsdelivr.net/npm/@mozilla/readability@0.4.2/Readability.js
+// @require      https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js
+// @connect      *
 // ==/UserScript==
 
-// 使用立即执行函数表达式 (IIFE) 来创建一个独立的作用域。
-// 这可以避免脚本中的变量和函数与网页自身的代码发生冲突。
 (function() {
-    'use strict'; // 启用严格模式，这能帮助捕获一些常见的编码错误，并使代码更安全。
+    'use strict';
 
     // ===== 1. 配置管理模块 =====
-    // 这个模块负责所有与用户配置相关的操作，包括读取、保存和验证。
     const Config = {
-        // 将所有配置项的键名集中管理，方便日后维护和修改。
         keys: {
-            minifluxUrl: 'miniflux_url', // 存储用户 Miniflux 地址的键。
-            apiUrl: 'siyuan_api_url',      // 存储用户思源 API 地址的键。
-            token: 'siyuan_token',         // 存储用户思源 API Token 的键。
-            notebookId: 'siyuan_notebook_id' // 存储用户思源笔记本 ID 的键。
+            siyuanApiUrl: 'web_clipper_siyuan_api_url',
+            siyuanApiToken: 'web_clipper_siyuan_api_token',
+            aiApiUrl: 'web_clipper_ai_api_url',
+            aiApiKey: 'web_clipper_ai_api_key',
+            aiModel: 'web_clipper_ai_model',
+            defaultNotebookId: 'web_clipper_default_notebook_id',
+            buttonPosition: 'web_clipper_button_position',
+            lastSelectedNotebookId: 'web_clipper_last_notebook_id'
         },
-
-        // 从 Tampermonkey 的本地存储中获取所有已保存的配置。
-        // GM_getValue 的第二个参数是默认值，如果存储中没有对应项，则返回这个空字符串。
         getAll: function() {
             return {
-                minifluxUrl: GM_getValue(this.keys.minifluxUrl, ''),
-                apiUrl: GM_getValue(this.keys.apiUrl, ''),
-                token: GM_getValue(this.keys.token, ''),
-                notebookId: GM_getValue(this.keys.notebookId, '')
+                siyuanApiUrl: GM_getValue(this.keys.siyuanApiUrl, ''),
+                siyuanApiToken: GM_getValue(this.keys.siyuanApiToken, ''),
+                aiApiUrl: GM_getValue(this.keys.aiApiUrl, ''),
+                aiApiKey: GM_getValue(this.keys.aiApiKey, ''),
+                aiModel: GM_getValue(this.keys.aiModel, 'glm-4-flash'),
+                defaultNotebookId: GM_getValue(this.keys.defaultNotebookId, ''),
+                buttonPosition: GM_getValue(this.keys.buttonPosition, { top: '100px', right: '20px' }),
+                lastSelectedNotebookId: GM_getValue(this.keys.lastSelectedNotebookId, '')
             };
         },
-
-        // 将新的配置对象保存到 Tampermonkey 的本地存储中。
         setAll: function(newConfig) {
-            GM_setValue(this.keys.minifluxUrl, newConfig.minifluxUrl);
-            GM_setValue(this.keys.apiUrl, newConfig.apiUrl);
-            GM_setValue(this.keys.token, newConfig.token);
-            GM_setValue(this.keys.notebookId, newConfig.notebookId);
+            GM_setValue(this.keys.siyuanApiUrl, newConfig.siyuanApiUrl);
+            GM_setValue(this.keys.siyuanApiToken, newConfig.siyuanApiToken);
+            GM_setValue(this.keys.aiApiUrl, newConfig.aiApiUrl);
+            GM_setValue(this.keys.aiApiKey, newConfig.aiApiKey);
+            GM_setValue(this.keys.aiModel, newConfig.aiModel);
+            GM_setValue(this.keys.defaultNotebookId, newConfig.defaultNotebookId);
+            GM_setValue(this.keys.buttonPosition, newConfig.buttonPosition);
+            if (newConfig.lastSelectedNotebookId !== undefined) {
+                GM_setValue(this.keys.lastSelectedNotebookId, newConfig.lastSelectedNotebookId);
+            }
         },
-
-        // 检查所有必要的配置项是否都已填写。
-        // 这是一个快速验证方法，确保脚本在信息不全时不会尝试执行核心功能。
         isComplete: function() {
             const config = this.getAll();
-            // 使用逻辑与，只有当所有配置项都为真值（非空字符串）时，才返回 true。
-            return config.minifluxUrl && config.apiUrl && config.token && config.notebookId;
+            return config.siyuanApiUrl && config.siyuanApiToken && config.aiApiUrl && config.aiApiKey && config.aiModel;
         },
-
-        // 显示一个图形化的设置模态窗口，让用户输入或修改配置。
         showSettings: function() {
             const config = this.getAll();
-            
-            // 防止重复创建模态窗口。
-            if (document.getElementById('siyuan-settings-modal')) return;
-
-            // 使用 GM_addStyle 注入 CSS 样式。
-            // 这比直接操作 style 属性或创建 <style> 标签更简洁，并且能自动处理作用域问题。
+            // 移除已存在的模态框
+            const existingModal = document.getElementById('web-clipper-settings-modal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+            // 添加样式
             GM_addStyle(`
-                #siyuan-settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 100000; display: flex; justify-content: center; align-items: center; font-family: sans-serif; }
-                #siyuan-settings-content { background: #fff; padding: 20px 30px; border-radius: 8px; width: 90%; max-width: 450px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
-                #siyuan-settings-content h2 { margin-top: 0; color: #333; }
-                #siyuan-settings-content label { display: block; margin-top: 15px; margin-bottom: 5px; font-weight: bold; color: #555; }
-                #siyuan-settings-content input { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
-                #siyuan-settings-buttons { margin-top: 20px; text-align: right; }
-                #siyuan-settings-buttons button { padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px; }
-                #siyuan-save-btn { background-color: #007AFF; color: white; }
-                #siyuan-cancel-btn { background-color: #f0f0f0; color: #333; }
+                #web-clipper-settings-modal {
+                    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                    background: rgba(0, 0, 0, 0.3);
+                    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+                    z-index: 2147483647;
+                    display: flex; justify-content: center; align-items: center;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                }
+                #web-clipper-settings-content {
+                    background: rgba(255, 255, 255, 0.95);
+                    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+                    padding: 32px; border-radius: 20px;
+                    width: 90%; max-width: 600px;
+                    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+                    position: relative;
+                }
+                #web-clipper-settings-content h2 {
+                    margin-top: 0; color: #1a1a1a; font-size: 20px;
+                    display: flex; align-items: center; gap: 8px;
+                }
+                #web-clipper-settings-content label {
+                    display: block; margin-top: 16px; margin-bottom: 6px;
+                    font-weight: 500; color: #4a4a4a; font-size: 14px;
+                }
+                #web-clipper-settings-content input, #web-clipper-settings-content textarea {
+                    width: 100%; padding: 12px; box-sizing: border-box;
+                    border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 12px;
+                    font-size: 14px; transition: all 0.3s;
+                    background: rgba(255, 255, 255, 0.8);
+                }
+                #web-clipper-settings-content input:focus, #web-clipper-settings-content textarea:focus {
+                    outline: none; border-color: rgba(76, 175, 80, 0.5);
+                    box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+                    background: rgba(255, 255, 255, 0.95);
+                }
+                #web-clipper-settings-buttons {
+                    margin-top: 24px; text-align: right; display: flex; gap: 12px;
+                    justify-content: flex-end;
+                }
+                #web-clipper-settings-buttons button {
+                    padding: 12px 24px; border: none; border-radius: 12px;
+                    cursor: pointer; font-size: 14px; font-weight: 500;
+                    transition: all 0.3s; min-width: 80px;
+                }
+                #web-clipper-save-btn {
+                    background: rgba(76, 175, 80, 0.9); color: white;
+                }
+                #web-clipper-save-btn:hover {
+                    background: rgba(76, 175, 80, 1); transform: translateY(-1px);
+                }
+                #web-clipper-cancel-btn {
+                    background: rgba(0, 0, 0, 0.1); color: #4a4a4a;
+                }
+                #web-clipper-cancel-btn:hover {
+                    background: rgba(0, 0, 0, 0.15);
+                }
+                .config-section {
+                    margin-bottom: 24px;
+                    border-bottom: 1px solid rgba(0,0,0,0.05);
+                    padding-bottom: 20px;
+                }
+                .config-section:last-child {
+                    border-bottom: none;
+                    margin-bottom: 0;
+                    padding-bottom: 0;
+                }
+                .section-title {
+                    font-weight: 600;
+                    color: #1a1a1a;
+                    margin-bottom: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
             `);
-
-            // 使用原生 DOM API (createElement, appendChild) 来构建模态窗口。
-            // 这是为了兼容现代浏览器的 "Trusted Types" 安全策略，该策略禁止直接使用 innerHTML 插入不受信任的 HTML 字符串。
+            // 创建模态框
             const modal = document.createElement('div');
-            modal.id = 'siyuan-settings-modal'; // 设置 ID，方便后续查找和防止重复创建。
+            modal.id = 'web-clipper-settings-modal';
             const content = document.createElement('div');
-            content.id = 'siyuan-settings-content';
-
+            content.id = 'web-clipper-settings-content';
+            // 创建标题
             const title = document.createElement('h2');
-            title.textContent = '剪藏服务配置'; // 设置窗口标题。
+            title.textContent = '⚙️ 剪藏工具配置';
             content.appendChild(title);
 
-            // --- Miniflux 地址输入框 ---
-            const minifluxUrlLabel = document.createElement('label');
-            minifluxUrlLabel.textContent = 'Miniflux 地址 (如: https://rss.example.com)';
-            minifluxUrlLabel.setAttribute('for', 'minifluxUrl'); // 关联 label 和 input，提升可访问性。
-            content.appendChild(minifluxUrlLabel);
-            const minifluxUrlInput = document.createElement('input');
-            minifluxUrlInput.type = 'url'; // 使用 url 类型的输入框，浏览器会进行基础格式验证。
-            minifluxUrlInput.id = 'minifluxUrl';
-            minifluxUrlInput.placeholder = '请输入你的 Miniflux 服务器地址';
-            minifluxUrlInput.value = config.minifluxUrl; // 将已保存的值填入输入框。
-            content.appendChild(minifluxUrlInput);
-
-            // --- 思源 API 地址输入框 ---
-            const apiUrlLabel = document.createElement('label');
-            apiUrlLabel.textContent = '思源 API 地址 (如: https://siyuan.example.com)';
-            apiUrlLabel.setAttribute('for', 'apiUrl');
-            content.appendChild(apiUrlLabel);
-            const apiUrlInput = document.createElement('input');
-            apiUrlInput.type = 'url';
-            apiUrlInput.id = 'apiUrl';
-            apiUrlInput.placeholder = '请输入你的思源服务器地址';
-            apiUrlInput.value = config.apiUrl;
-            content.appendChild(apiUrlInput);
-
-            // --- API Token 输入框 ---
-            const tokenLabel = document.createElement('label');
-            tokenLabel.textContent = 'API Token';
-            tokenLabel.setAttribute('for', 'token');
-            content.appendChild(tokenLabel);
-            const tokenInput = document.createElement('input');
-            tokenInput.type = 'text'; // Token 是字符串，使用 text 类型。
-            tokenInput.id = 'token';
-            tokenInput.placeholder = '在思源设置 -> 关于 -> API Token 中生成';
-            tokenInput.value = config.token;
-            content.appendChild(tokenInput);
-
-            // --- 笔记本 ID 输入框 ---
-            const notebookIdLabel = document.createElement('label');
-            notebookIdLabel.textContent = '笔记本 ID (如: 20211231123456-abcdefg)';
-            notebookIdLabel.setAttribute('for', 'notebookId');
-            content.appendChild(notebookIdLabel);
-            const notebookIdInput = document.createElement('input');
-            notebookIdInput.type = 'text';
-            notebookIdInput.id = 'notebookId';
-            notebookIdInput.placeholder = '在思源笔记设置 -> 关于 -> 笔记本列表中查找';
-            notebookIdInput.value = config.notebookId;
-            content.appendChild(notebookIdInput);
+            // 思源笔记配置部分
+            const siyuanSection = document.createElement('div');
+            siyuanSection.className = 'config-section';
             
-            // --- 按钮区域 ---
+            const siyuanTitle = document.createElement('div');
+            siyuanTitle.className = 'section-title';
+            siyuanTitle.textContent = '📚 思源笔记配置';
+            siyuanSection.appendChild(siyuanTitle);
+
+            // 思源 API 地址
+            const siyuanApiUrlLabel = document.createElement('label');
+            siyuanApiUrlLabel.textContent = '思源笔记 API 地址';
+            siyuanApiUrlLabel.setAttribute('for', 'siyuanApiUrl');
+            siyuanSection.appendChild(siyuanApiUrlLabel);
+            
+            const siyuanApiUrlInput = document.createElement('input');
+            siyuanApiUrlInput.type = 'url';
+            siyuanApiUrlInput.id = 'siyuanApiUrl';
+            siyuanApiUrlInput.placeholder = 'http://localhost:6806';
+            siyuanApiUrlInput.value = config.siyuanApiUrl;
+            siyuanSection.appendChild(siyuanApiUrlInput);
+
+            // 思源 API Token
+            const siyuanApiTokenLabel = document.createElement('label');
+            siyuanApiTokenLabel.textContent = '思源笔记 API Token';
+            siyuanApiTokenLabel.setAttribute('for', 'siyuanApiToken');
+            siyuanSection.appendChild(siyuanApiTokenLabel);
+            
+            const siyuanApiTokenInput = document.createElement('input');
+            siyuanApiTokenInput.type = 'password';
+            siyuanApiTokenInput.id = 'siyuanApiToken';
+            siyuanApiTokenInput.placeholder = '请输入API Token';
+            siyuanApiTokenInput.value = config.siyuanApiToken;
+            siyuanSection.appendChild(siyuanApiTokenInput);
+
+            // 默认笔记本ID
+            const defaultNotebookIdLabel = document.createElement('label');
+            defaultNotebookIdLabel.textContent = '默认笔记本ID (可选，可在剪藏时选择)';
+            defaultNotebookIdLabel.setAttribute('for', 'defaultNotebookId');
+            siyuanSection.appendChild(defaultNotebookIdLabel);
+            
+            const defaultNotebookIdInput = document.createElement('input');
+            defaultNotebookIdInput.type = 'text';
+            defaultNotebookIdInput.id = 'defaultNotebookId';
+            defaultNotebookIdInput.placeholder = '请输入笔记本ID';
+            defaultNotebookIdInput.value = config.defaultNotebookId;
+            siyuanSection.appendChild(defaultNotebookIdInput);
+
+            content.appendChild(siyuanSection);
+
+            // AI 配置部分
+            const aiSection = document.createElement('div');
+            aiSection.className = 'config-section';
+            
+            const aiTitle = document.createElement('div');
+            aiTitle.className = 'section-title';
+            aiTitle.textContent = '🤖 AI 配置';
+            aiSection.appendChild(aiTitle);
+
+            // AI API 地址
+            const aiApiUrlLabel = document.createElement('label');
+            aiApiUrlLabel.textContent = 'AI API 地址';
+            aiApiUrlLabel.setAttribute('for', 'aiApiUrl');
+            aiSection.appendChild(aiApiUrlLabel);
+            
+            const aiApiUrlInput = document.createElement('input');
+            aiApiUrlInput.type = 'url';
+            aiApiUrlInput.id = 'aiApiUrl';
+            aiApiUrlInput.placeholder = 'https://api.openai.com/v1/chat/completions';
+            aiApiUrlInput.value = config.aiApiUrl;
+            aiSection.appendChild(aiApiUrlInput);
+
+            // AI API Key
+            const aiApiKeyLabel = document.createElement('label');
+            aiApiKeyLabel.textContent = 'AI API Key';
+            aiApiKeyLabel.setAttribute('for', 'aiApiKey');
+            aiSection.appendChild(aiApiKeyLabel);
+            
+            const aiApiKeyInput = document.createElement('input');
+            aiApiKeyInput.type = 'password';
+            aiApiKeyInput.id = 'aiApiKey';
+            aiApiKeyInput.placeholder = '请输入API Key';
+            aiApiKeyInput.value = config.aiApiKey;
+            aiSection.appendChild(aiApiKeyInput);
+
+            // AI 模型
+            const aiModelLabel = document.createElement('label');
+            aiModelLabel.textContent = 'AI 模型';
+            aiModelLabel.setAttribute('for', 'aiModel');
+            aiSection.appendChild(aiModelLabel);
+            
+            const aiModelInput = document.createElement('input');
+            aiModelInput.type = 'text';
+            aiModelInput.id = 'aiModel';
+            aiModelInput.placeholder = 'glm-4-flash';
+            aiModelInput.value = config.aiModel;
+            aiSection.appendChild(aiModelInput);
+
+            content.appendChild(aiSection);
+
+            // 创建按钮
             const buttons = document.createElement('div');
-            buttons.id = 'siyuan-settings-buttons';
-
-            // 取消按钮
+            buttons.id = 'web-clipper-settings-buttons';
             const cancelButton = document.createElement('button');
-            cancelButton.id = 'siyuan-cancel-btn';
+            cancelButton.id = 'web-clipper-cancel-btn';
             cancelButton.textContent = '取消';
-            // 点击取消按钮时，移除整个模态窗口。
-            cancelButton.addEventListener('click', () => modal.remove());
+            cancelButton.addEventListener('click', () => {
+                modal.remove();
+            });
             buttons.appendChild(cancelButton);
-
-            // 保存按钮
             const saveButton = document.createElement('button');
-            saveButton.id = 'siyuan-save-btn';
+            saveButton.id = 'web-clipper-save-btn';
             saveButton.textContent = '保存';
-            // 点击保存按钮时，执行保存逻辑。
             saveButton.addEventListener('click', () => {
                 const newConfig = {
-                    minifluxUrl: minifluxUrlInput.value.trim(), // trim() 移除用户可能误输入的首尾空格。
-                    apiUrl: apiUrlInput.value.trim(),
-                    token: tokenInput.value.trim(),
-                    notebookId: notebookIdInput.value.trim()
+                    siyuanApiUrl: siyuanApiUrlInput.value.trim(),
+                    siyuanApiToken: siyuanApiTokenInput.value.trim(),
+                    aiApiUrl: aiApiUrlInput.value.trim(),
+                    aiApiKey: aiApiKeyInput.value.trim(),
+                    aiModel: aiModelInput.value.trim(),
+                    defaultNotebookId: defaultNotebookIdInput.value.trim(),
+                    buttonPosition: config.buttonPosition,
+                    lastSelectedNotebookId: config.lastSelectedNotebookId
                 };
-                this.setAll(newConfig); // 调用 setAll 方法保存配置。
-                modal.remove(); // 关闭模态窗口。
-                alert('配置已保存！'); // 给用户一个明确的反馈。
-                window.location.reload(); // 刷新页面，让新配置立即生效。
+                this.setAll(newConfig);
+                modal.remove();
+                Toast.show('配置已保存！', 'success');
+                setTimeout(() => {
+                    if (!this.isComplete()) {
+                        this.showSettings();
+                    }
+                }, 1000);
             });
             buttons.appendChild(saveButton);
-
             content.appendChild(buttons);
             modal.appendChild(content);
-            document.body.appendChild(modal); // 将整个模态窗口添加到页面中。
-
-            // 点击模态窗口的背景（非内容区域）时，也可以关闭窗口。
+            // 添加到body
+            document.body.appendChild(modal);
+            // 绑定背景点击事件
             modal.addEventListener('click', (e) => {
-                if (e.target === modal) modal.remove();
+                if (e.target === modal) {
+                    modal.remove();
+                }
             });
         }
     };
 
-    // ===== 2. 核心上传模块 =====
-    // 这个模块负责整个文章抓取、转换和上传的核心业务逻辑。
-    const SiYuanUploader = {
-        config: {}, // 初始化一个空对象，用于在 init 函数中填充配置。
-        
-        // 初始化函数，是模块的入口。
-        init: function() {
-            this.config = Config.getAll(); // 从 Config 模块获取配置。
+    // ===== 2. Toast 通知系统 =====
+    const Toast = {
+        show: function(message, type = 'info', duration = 3000) {
+            // 添加样式
+            if (!document.querySelector('#toast-styles')) {
+                GM_addStyle(`
+                    .toast {
+                        position: fixed; top: 20px; right: 20px; z-index: 2147483647;
+                        background: rgba(255, 255, 255, 0.95);
+                        backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+                        border-radius: 12px; padding: 16px 20px;
+                        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2); display: flex;
+                        align-items: center; gap: 12px; min-width: 250px;
+                        animation: slideInRight 0.3s ease; max-width: 90vw;
+                    }
+                    .toast-success { border-left: 4px solid rgba(76, 175, 80, 0.8); }
+                    .toast-error { border-left: 4px solid rgba(244, 67, 54, 0.8); }
+                    .toast-info { border-left: 4px solid rgba(33, 150, 243, 0.8); }
+                    .toast-icon { font-size: 20px; }
+                    .toast-message { flex: 1; font-size: 14px; color: #1a1a1a; }
+                    @keyframes slideInRight {
+                        from { transform: translateX(100%); opacity: 0; }
+                        to { transform: translateX(0); opacity: 1; }
+                    }
+                `);
+            }
+            // 创建toast元素
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            // 创建图标
+            const icon = document.createElement('div');
+            icon.className = 'toast-icon';
+            icon.textContent = this.getIcon(type);
+            // 创建消息
+            const messageEl = document.createElement('div');
+            messageEl.className = 'toast-message';
+            messageEl.textContent = message;
+            // 组装
+            toast.appendChild(icon);
+            toast.appendChild(messageEl);
+            // 添加到body
+            document.body.appendChild(toast);
+            // 自动移除
+            setTimeout(() => {
+                toast.style.animation = 'slideInRight 0.3s ease reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        },
+        getIcon: function(type) {
+            const icons = {
+                success: '✅',
+                error: '❌',
+                info: 'ℹ️'
+            };
+            return icons[type] || icons.info;
+        }
+    };
 
-            // 1. 检查配置是否完整。
+    // ===== 3. 剪藏面板模块 =====
+    const ClipperPanel = {
+        isVisible: false,
+        panel: null,
+        show: function() {
+            if (this.isVisible) return;
+            this.isVisible = true;
+            // 移除已存在的面板
+            const existingPanel = document.getElementById('clipper-panel');
+            if (existingPanel) {
+                existingPanel.remove();
+            }
+            // 添加样式
+            if (!document.querySelector('#clipper-styles')) {
+                GM_addStyle(`
+                    #clipper-panel {
+                        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                        background: rgba(0, 0, 0, 0.3);
+                        backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+                        z-index: 2147483647;
+                        display: flex; justify-content: center; align-items: center;
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    }
+                    .clipper-content {
+                        background: rgba(255, 255, 255, 0.95);
+                        backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+                        border-radius: 20px; width: 90%; max-width: 500px;
+                        max-height: 80vh; overflow-y: auto;
+                        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+                        position: relative;
+                    }
+                    .clipper-header {
+                        padding: 24px; border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+                        display: flex; justify-content: space-between; align-items: center;
+                    }
+                    .clipper-title { font-size: 18px; font-weight: 600; color: #1a1a1a; }
+                    .clipper-close {
+                        width: 32px; height: 32px; border-radius: 50%;
+                        border: none; background: rgba(0, 0, 0, 0.1); cursor: pointer;
+                        display: flex; align-items: center; justify-content: center;
+                        transition: all 0.3s; font-size: 18px; color: #4a4a4a;
+                    }
+                    .clipper-close:hover {
+                        background: rgba(0, 0, 0, 0.15);
+                        transform: rotate(90deg);
+                    }
+                    .clipper-body { padding: 24px; }
+                    .info-item {
+                        margin-bottom: 20px;
+                    }
+                    .info-label {
+                        font-size: 12px; color: #6a6a6a; margin-bottom: 8px;
+                        font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;
+                    }
+                    .info-input, .info-select {
+                        width: 100%; padding: 12px;
+                        border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 12px;
+                        font-size: 14px; transition: all 0.3s;
+                        background: rgba(255, 255, 255, 0.8);
+                        box-sizing: border-box;
+                    }
+                    .info-select {
+                        -webkit-appearance: none;
+                        -moz-appearance: none;
+                        appearance: none;
+                        background-image: url("image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgba(0,0,0,0.5)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+                        background-repeat: no-repeat;
+                        background-position: right 12px center;
+                        background-size: 1em;
+                        padding-right: 36px;
+                    }
+                    .info-input:focus, .info-select:focus {
+                        outline: none; border-color: rgba(76, 175, 80, 0.5);
+                        box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+                        background: rgba(255, 255, 255, 0.95);
+                    }
+                    .info-input:hover, .info-select:hover {
+                        border-color: rgba(0, 0, 0, 0.2);
+                    }
+                    .tags-hint {
+                        font-size: 12px; color: #6a6a6a; margin-top: 8px;
+                        display: flex; align-items: center; gap: 4px;
+                    }
+                    .clipper-footer {
+                        padding: 24px; border-top: 1px solid rgba(0, 0, 0, 0.1);
+                        display: flex; gap: 12px; justify-content: flex-end;
+                    }
+                    .clipper-btn {
+                        padding: 12px 24px; border: none; border-radius: 12px;
+                        cursor: pointer; font-size: 14px; font-weight: 500;
+                        transition: all 0.3s; min-width: 100px;
+                    }
+                    .btn-clip {
+                        background: rgba(76, 175, 80, 0.9); color: white;
+                    }
+                    .btn-clip:hover:not(:disabled) {
+                        background: rgba(76, 175, 80, 1); transform: translateY(-1px);
+                    }
+                    .btn-clip:disabled {
+                        background: rgba(0, 0, 0, 0.2); cursor: not-allowed;
+                    }
+                    .btn-cancel {
+                        background: rgba(0, 0, 0, 0.1); color: #4a4a4a;
+                    }
+                    .btn-cancel:hover { background: rgba(0, 0, 0, 0.15); }
+                    .loading-spinner {
+                        display: inline-block; width: 16px; height: 16px;
+                        border: 2px solid #ffffff; border-radius: 50%;
+                        border-top-color: transparent; animation: spin 0.8s linear infinite;
+                    }
+                    @keyframes spin { to { transform: rotate(360deg); } }
+                    .notebook-container {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                    }
+                    .notebook-select {
+                        flex: 1;
+                    }
+                    .notebook-refresh {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 8px;
+                        border: 1px solid rgba(0,0,0,0.1);
+                        background: white;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        cursor: pointer;
+                        transition: all 0.2s;
+                    }
+                    .notebook-refresh:hover {
+                        background: rgba(0,0,0,0.05);
+                    }
+                `);
+            }
+            // 创建面板
+            const panel = document.createElement('div');
+            panel.id = 'clipper-panel';
+            const content = document.createElement('div');
+            content.className = 'clipper-content';
+            // 创建头部
+            const header = document.createElement('div');
+            header.className = 'clipper-header';
+            const title = document.createElement('div');
+            title.className = 'clipper-title';
+            title.textContent = '⚡️ 网页剪藏';
+            const closeButton = document.createElement('button');
+            closeButton.className = 'clipper-close';
+            closeButton.textContent = '×';
+            closeButton.addEventListener('click', () => {
+                this.hide();
+            });
+            header.appendChild(title);
+            header.appendChild(closeButton);
+            // 创建主体
+            const body = document.createElement('div');
+            body.className = 'clipper-body';
+            // 笔记本选择
+            const notebookContainer = document.createElement('div');
+            notebookContainer.className = 'info-item';
+            const notebookLabel = document.createElement('div');
+            notebookLabel.className = 'info-label';
+            notebookLabel.textContent = '笔记本';
+            const notebookSelectWrapper = document.createElement('div');
+            notebookSelectWrapper.className = 'notebook-container';
+            const notebookSelect = document.createElement('select');
+            notebookSelect.className = 'info-select notebook-select';
+            notebookSelect.id = 'notebook-select';
+            notebookSelect.innerHTML = '<option value="">选择笔记本</option>';
+            notebookSelect.disabled = true;
+            const refreshButton = document.createElement('button');
+            refreshButton.className = 'notebook-refresh';
+            refreshButton.innerHTML = '🔄';
+            refreshButton.title = '刷新笔记本列表';
+            refreshButton.addEventListener('click', () => {
+                WebClipper.fetchNotebooks();
+            });
+            notebookSelectWrapper.appendChild(notebookSelect);
+            notebookSelectWrapper.appendChild(refreshButton);
+            notebookContainer.appendChild(notebookLabel);
+            notebookContainer.appendChild(notebookSelectWrapper);
+            // 标题输入
+            const titleContainer = document.createElement('div');
+            titleContainer.className = 'info-item';
+            const titleLabel = document.createElement('div');
+            titleLabel.className = 'info-label';
+            titleLabel.textContent = '标题';
+            const titleInput = document.createElement('input');
+            titleInput.type = 'text';
+            titleInput.className = 'info-input';
+            titleInput.id = 'clip-title-input';
+            titleInput.value = document.title;
+            titleInput.placeholder = '输入文章标题';
+            titleContainer.appendChild(titleLabel);
+            titleContainer.appendChild(titleInput);
+            // URL输入
+            const urlContainer = document.createElement('div');
+            urlContainer.className = 'info-item';
+            const urlLabel = document.createElement('div');
+            urlLabel.className = 'info-label';
+            urlLabel.textContent = '链接';
+            const urlInput = document.createElement('input');
+            urlInput.type = 'url';
+            urlInput.className = 'info-input';
+            urlInput.id = 'clip-url-input';
+            urlInput.value = window.location.href;
+            urlInput.placeholder = '输入文章链接';
+            urlContainer.appendChild(urlLabel);
+            urlContainer.appendChild(urlInput);
+            // 标签输入
+            const tagsContainer = document.createElement('div');
+            tagsContainer.className = 'info-item';
+            const tagsLabel = document.createElement('div');
+            tagsLabel.className = 'info-label';
+            tagsLabel.textContent = '自定义标签（可选）';
+            const tagsInput = document.createElement('input');
+            tagsInput.type = 'text';
+            tagsInput.className = 'info-input';
+            tagsInput.id = 'custom-tags-input';
+            tagsInput.placeholder = '输入标签，用逗号或空格分隔';
+            const tagsHint = document.createElement('div');
+            tagsHint.className = 'tags-hint';
+            tagsHint.textContent = '💡 AI将根据您的标签生成补充标签，避免重复';
+            tagsContainer.appendChild(tagsLabel);
+            tagsContainer.appendChild(tagsInput);
+            tagsContainer.appendChild(tagsHint);
+            // 添加所有组件到body
+            body.appendChild(notebookContainer);
+            body.appendChild(titleContainer);
+            body.appendChild(urlContainer);
+            body.appendChild(tagsContainer);
+            // 创建底部
+            const footer = document.createElement('div');
+            footer.className = 'clipper-footer';
+            const cancelButton = document.createElement('button');
+            cancelButton.className = 'clipper-btn btn-cancel';
+            cancelButton.textContent = '取消';
+            cancelButton.addEventListener('click', () => {
+                this.hide();
+            });
+            const clipButton = document.createElement('button');
+            clipButton.className = 'clipper-btn btn-clip';
+            const buttonText = document.createElement('span');
+            buttonText.id = 'clip-button-text';
+            buttonText.textContent = '开始剪藏';
+            clipButton.appendChild(buttonText);
+            clipButton.addEventListener('click', () => {
+                WebClipper.doClip();
+            });
+            footer.appendChild(cancelButton);
+            footer.appendChild(clipButton);
+            // 组装面板
+            content.appendChild(header);
+            content.appendChild(body);
+            content.appendChild(footer);
+            panel.appendChild(content);
+            // 添加到body
+            document.body.appendChild(panel);
+            this.panel = panel;
+            // 绑定背景点击事件
+            panel.addEventListener('click', (e) => {
+                if (e.target === panel) {
+                    this.hide();
+                }
+            });
+            // 自动聚焦标题输入框
+            setTimeout(() => {
+                titleInput.focus();
+                titleInput.select();
+            }, 300);
+            // 显示后加载笔记本列表
+            setTimeout(() => {
+                WebClipper.fetchNotebooks();
+            }, 300);
+        },
+        hide: function() {
+            if (this.panel) {
+                this.panel.remove();
+                this.panel = null;
+            }
+            this.isVisible = false;
+        },
+        setLoading: function(loading) {
+            const button = document.querySelector('.btn-clip');
+            const buttonText = document.getElementById('clip-button-text');
+            if (button && buttonText) {
+                if (loading) {
+                    button.disabled = true;
+                    buttonText.textContent = '';
+                    const spinner = document.createElement('span');
+                    spinner.className = 'loading-spinner';
+                    buttonText.parentNode.insertBefore(spinner, buttonText);
+                    buttonText.textContent = ' 剪藏中...';
+                } else {
+                    button.disabled = false;
+                    const spinner = button.querySelector('.loading-spinner');
+                    if (spinner) spinner.remove();
+                    buttonText.textContent = '开始剪藏';
+                }
+            }
+        }
+    };
+
+    // ===== 4. 核心剪藏模块 =====
+    const WebClipper = {
+        config: {},
+        button: null,
+        dragThrottle: null,
+        notebooks: [],
+        init: function() {
+            this.config = Config.getAll();
             if (!Config.isComplete()) {
                 console.warn('脚本配置不完整，请在菜单中打开设置进行配置。');
-                return; // 如果配置不全，则直接退出，不执行后续任何操作。
-            }
-
-            // 2. 检查当前页面是否是用户配置的 Miniflux 实例。
-            // 这是关键的安全和隔离步骤，确保脚本只在用户的 Miniflux 页面上运行。
-            try {
-                const currentHost = window.location.hostname; // 获取当前页面的域名，如 "rss.by00s.top"。
-                const configuredHost = new URL(this.config.minifluxUrl).hostname; // 从用户配置的完整 URL 中解析出域名。
-                if (currentHost !== configuredHost) {
-                    // 如果当前域名与配置的域名不匹配，则脚本不执行。
-                    // console.log(`当前域名 ${currentHost} 与配置的 Miniflux 域名 ${configuredHost} 不匹配，脚本未启动。`);
-                    return;
-                }
-            } catch (e) {
-                // 如果用户配置的 Miniflux 地址格式不正确，new URL() 会抛出异常。
-                console.error('Miniflux 地址格式错误:', e);
+                // 自动打开设置
+                setTimeout(() => Config.showSettings(), 1000);
                 return;
             }
-            
-            console.log(`当前域名匹配，脚本启动。`);
-
-            // 3. 如果配置和域名都正确，则开始创建上传按钮。
-            // 使用 document.readyState 来判断页面的加载状态。
+            console.log(`Web Clipper: 启动`);
             if (document.readyState === 'loading') {
-                // 如果页面还在加载中（HTML 文档正在被解析），则等待 'DOMContentLoaded' 事件后再创建按钮。
-                // 这确保了我们要找的 DOM 元素（如 .entry-actions ul）已经存在。
-                document.addEventListener('DOMContentLoaded', () => this.createUploadButton());
+                document.addEventListener('DOMContentLoaded', () => this.createFloatingButton());
             } else {
-                // 如果页面已经加载完成（DOMContentLoaded 事件已经触发），则延迟一小段时间再创建按钮。
-                // 这是为了应对某些动态加载内容的单页应用（SPA），给它们留出渲染时间。
-                setTimeout(() => this.createUploadButton(), 500);
+                setTimeout(() => this.createFloatingButton(), 500);
             }
         },
-        
-        // 将 GM_xmlhttpRequest 包装成一个返回 Promise 的函数。
-        // 这样做是为了使用现代的 async/await 语法，使异步代码更易读、更易维护。
         fetchWithGM: function(details) {
             return new Promise((resolve, reject) => {
-                // GM_xmlhttpRequest 的 onload 事件在请求成功时触发。
                 details.onload = (res) => {
-                    // 检查 HTTP 状态码是否在 2xx 范围内，表示成功。
-                    if (res.status >= 200 && res.status < 300) {
-                        resolve(res); // 成功则 resolve Promise。
-                    } else {
-                        // 失败则 reject Promise，并附带错误信息。
-                        reject(new Error(`请求失败: ${res.status} ${res.statusText}`));
+                    try {
+                        const response = {
+                            status: res.status,
+                            statusText: res.statusText,
+                            responseText: res.responseText
+                        };
+                        const contentType = res.responseHeaders.match(/content-type:\s*([^;]+)/i);
+                        if (contentType && contentType[1].includes('application/json')) {
+                            response.data = JSON.parse(res.responseText);
+                        }
+                        if (res.status >= 200 && res.status < 300) {
+                            resolve(response);
+                        } else {
+                            reject(new Error(`请求失败: ${res.status} ${res.statusText}`));
+                        }
+                    } catch (error) {
+                        reject(error);
                     }
                 };
-                // onerror 事件在网络层面出错时触发（如 DNS 解析失败、跨域等）。
                 details.onerror = (err) => reject(err);
-                GM_xmlhttpRequest(details); // 发起实际的请求。
+                GM_xmlhttpRequest(details);
             });
         },
-        
-        // 根据文章标题生成一个安全的文件系统路径。
-        generateSafePath: function(title) {
-            // 使用正则表达式清理标题，只保留中英文、数字、空格和短横线。
-            const safeTitle = title.toLowerCase().replace(/[^\w\u4e00-\u9fa5\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').trim();
-            const timestamp = new Date().toISOString().slice(0, 10); // 获取当前日期，格式为 YYYY-MM-DD。
-            return `/web-clips/${timestamp}/${safeTitle}`; // 组合成最终路径。
-        },
-        
-        // 获取文章标题。使用多个选择器来增加脚本的鲁棒性，适应不同版本的 Miniflux 或不同类型的页面。
-        getArticleTitle: function() {
-            const selectors = ['h1#page-header-title', 'h1.page-header-title', '.entry-title h1', 'article h1', 'main h1', 'h1', 'title'];
-            for (const selector of selectors) {
-                const element = document.querySelector(selector);
-                // 找到第一个存在且内容不为空的元素，就将其作为标题。
-                if (element && element.textContent.trim()) {
-                    return element.textContent.trim();
-                }
-            }
-            return '无标题文章'; // 如果所有选择器都找不到，则使用默认标题。
-        },
-
-        // 获取文章正文内容。同样使用多个选择器。
-        getArticleContent: function() {
-            const selectors = ['main article.entry-content', '.entry-content', 'article.content', '.content', 'main'];
-            for (const selector of selectors) {
-                const element = document.querySelector(selector);
-                if (element) {
-                    // 使用 cloneNode(true) 复制元素及其所有子元素。
-                    // 这样做是为了在不影响原始页面的情况下进行后续的清理和转换操作。
-                    return element.cloneNode(true);
-                }
-            }
-            return null;
-        },
-        
-        // 使用 Turndown.js 库将 HTML 元素转换为 Markdown。
-        convertToMarkdown: function(element) {
-            if (!element) return '';
-            // 创建 TurndownService 实例，并配置转换规则。
-            const turndownService = new TurndownService({ 
-                headingStyle: 'atx',        // 标题风格：使用 # ## ### (ATX style) 而不是下划线。
-                codeBlockStyle: 'fenced'    // 代码块风格：使用 ``` ``` 而不是缩进。
-            });
-            return turndownService.turndown(element); // 执行转换。
-        },
-        
-        // 调用思源笔记的 API 来创建文档。
-        createSiYuanDocument: async function(title, markdown) {
-            const path = this.generateSafePath(title);
-            // 构建思源 API 需要的请求体数据。
-            const docData = { notebook: this.config.notebookId, path: path, markdown: markdown };
-            
-            // 使用我们包装好的 fetchWithGM 函数发送 POST 请求。
-            const response = await this.fetchWithGM({
-                method: 'POST',
-                url: `${this.config.apiUrl}/api/filetree/createDocWithMd`,
-                headers: { 
-                    'Content-Type': 'application/json', // 告诉服务器我们发送的是 JSON 数据。
-                    'Authorization': `Token ${this.config.token}` // 使用 Token 进行身份验证。
-                },
-                data: JSON.stringify(docData) // 将 JavaScript 对象转换为 JSON 字符串。
-            });
-            
-            const result = JSON.parse(response.responseText); // 解析服务器返回的 JSON 响应。
-            // 思源 API 的规范：code 为 0 表示成功，否则表示失败。
-            if (result.code !== 0) { 
-                throw new Error(`思源API错误: ${result.msg}`); 
-            }
-            return result.data;
-        },
-        
-        // 主上传函数，协调整个上传流程。
-        uploadToSiYuan: async function() {
-            const button = document.getElementById('siyuan-upload-btn');
-            if (!button) return;
-
-            const originalText = button.textContent; // 保存按钮的原始文本。
-            button.disabled = true; // 禁用按钮，防止用户重复点击。
-            button.textContent = '上传中...'; // 更新按钮文本，给用户即时反馈。
-
+        fetchNotebooks: async function() {
+            const selectElement = document.getElementById('notebook-select');
+            if (!selectElement) return;
+            selectElement.disabled = true;
+            selectElement.innerHTML = '<option value="">正在加载笔记本列表...</option>';
             try {
-                console.log('开始上传到思源');
-                const title = this.getArticleTitle(); // 获取标题。
-                const content = this.getArticleContent(); // 获取内容。
-                
-                if (!content) { throw new Error('无法获取文章内容'); } // 基本检查。
-
-                const markdown = this.convertToMarkdown(content); // 转换为 Markdown。
-                if (!markdown.trim()) { throw new Error('转换后的内容为空'); } // 基本检查。
-
-                await this.createSiYuanDocument(title, markdown); // 执行上传。
-
-                // 上传成功后的 UI 反馈。
-                button.textContent = '成功';
-                console.log('上传成功');
-                setTimeout(() => { 
-                    button.textContent = originalText; // 2秒后恢复按钮原始文本。
-                    button.disabled = false;      // 重新启用按钮。
-                }, 2000);
+                const response = await this.fetchWithGM({
+                    method: 'POST',
+                    url: `${this.config.siyuanApiUrl}/api/notebook/lsNotebooks`,
+                    headers: {
+                        'Authorization': `Token ${this.config.siyuanApiToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                     JSON.stringify({})
+                });
+                if (response.data.code === 0) {
+                    this.notebooks = response.data.data.notebooks;
+                    selectElement.innerHTML = '';
+                    this.notebooks.forEach(nb => {
+                        const option = document.createElement('option');
+                        option.value = nb.id;
+                        option.textContent = nb.name;
+                        selectElement.appendChild(option);
+                    });
+                    // 设置上次选择的笔记本
+                    if (this.config.lastSelectedNotebookId) {
+                        selectElement.value = this.config.lastSelectedNotebookId;
+                    } else if (this.config.defaultNotebookId) {
+                        selectElement.value = this.config.defaultNotebookId;
+                    }
+                } else {
+                    throw new Error(response.data.msg || '获取笔记本列表失败');
+                }
             } catch (error) {
-                // 捕获并处理上传过程中可能出现的任何错误。
-                console.error('上传失败:', error);
-                button.textContent = '失败';
-                alert(`上传失败: ${error.message}`); // 使用 alert 弹窗显示错误信息，让用户明确知道发生了什么。
-                setTimeout(() => { 
-                    button.textContent = originalText; // 3秒后恢复按钮原始文本。
-                    button.disabled = false;      // 重新启用按钮。
-                }, 3000);
+                console.error('加载笔记本列表失败:', error);
+                selectElement.innerHTML = '<option value="">加载失败：' + (error.message || '未知错误') + '</option>';
+                Toast.show('加载笔记本列表失败', 'error');
+            } finally {
+                selectElement.disabled = false;
             }
         },
-        
-        // 在页面上创建“上传思源”按钮。
-        createUploadButton: function() {
-            // 防止重复创建按钮。
-            if (document.getElementById('siyuan-upload-btn')) return;
-            
-            // 查找 Miniflux 原生的按钮容器。
-            const actionsList = document.querySelector('.entry-actions ul');
-            if (!actionsList) { 
-                // 如果没找到，可能页面还没加载完，1秒后重试。
-                setTimeout(() => this.createUploadButton(), 1000); 
-                return; 
+        // AI生成标签的函数（支持自定义标签参考）
+        generateTagsWithLLM: async function(title, content, customTags = []) {
+            const customTagsText = customTags.length > 0 ? 
+                `用户已提供的标签（请避免生成相似或重复的标签）：${customTags.join('、')}` : '';
+            const prompt = `请根据以下文章标题和内容，生成3到5个最能概括文章核心主题的标签。${customTagsText}
+要求：
+1. 标签需要简洁、精准，使用中文，并且是两字名词
+2. 如果用户已提供标签，请生成补充性的标签，避免重复
+3. 请直接返回标签，用逗号分隔，不要有任何其他解释或格式
+标题：
+ ${title}
+内容：
+ ${content.substring(0, 2000)}...`;
+            try {
+                const response = await this.fetchWithGM({
+                    method: 'POST',
+                    url: this.config.aiApiUrl,
+                    headers: {
+                        'Authorization': `Bearer ${this.config.aiApiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify({
+                        model: this.config.aiModel,
+                        messages: [
+                            {
+                                role: "user",
+                                content: prompt
+                            }
+                        ],
+                        temperature: 0.5,
+                        max_tokens: 100,
+                        stream: false,
+                        thinking: {
+                            type: "disabled"
+                        }
+                    })
+                });
+                if (response.data.choices && response.data.choices[0] && response.data.choices[0].message) {
+                    const tags = response.data.choices[0].message.content.trim();
+                    console.log(`AI生成的标签: ${tags}`);
+                    return tags;
+                } else {
+                    console.error('AI响应格式不正确:', response.data);
+                    return '';
+                }
+            } catch (error) {
+                console.error('调用AI API失败:', error);
+                return '';
             }
-
-            // 创建按钮的 DOM 结构。
-            const li = document.createElement('li'); // Miniflux 的按钮被 <li> 包裹。
-            const button = document.createElement('button');
-            button.id = 'siyuan-upload-btn';
-            button.className = 'page-button'; // 使用 Miniflux 的按钮样式类，以保持风格一致。
-            button.textContent = '上传思源';
-            button.title = '上传到思源笔记';
-            
-            // 使用内联样式设置按钮外观，确保在任何主题下都能正常显示。
-            button.style.cssText = `width: auto; height: 32px; padding: 4px 8px; display: flex; justify-content: center; align-items: center; border-radius: 8px; background-color: #007AFF; color: white; border: none; cursor: pointer; transition: background-color 150ms ease; font-size: 12px; margin: 0 2px;`;
-            
-            // 添加鼠标悬停效果，提升交互体验。
-            button.addEventListener('mouseenter', () => { button.style.backgroundColor = '#0056CC'; });
-            button.addEventListener('mouseleave', () => { button.style.backgroundColor = '#007AFF'; });
-            
-            // 绑定点击事件，点击时执行上传函数。
-            button.addEventListener('click', () => this.uploadToSiYuan());
-            
-            li.appendChild(button);
-            actionsList.appendChild(li); // 将按钮添加到页面中。
+        },
+        // 合并并去重标签
+        mergeTags: function(customTags, aiTagsString) {
+            const aiTags = aiTagsString ? aiTagsString.split(/[,，]/).map(tag => tag.trim()).filter(tag => tag) : [];
+            const allTags = [...new Set([...customTags, ...aiTags])];
+            return allTags.join('，');
+        },
+        // 保存到思源笔记的函数 (支持按月分类和指定笔记本)
+        saveToSiyuan: async function(title, markdown, tags, url, notebookId) {
+            // 按月创建文件夹
+            const currentMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+            const sanitizedTitle = title.replace(/[\/\\:*?"<>|]/g, '_');
+            const docPath = `/web-clips/${currentMonth}/${sanitizedTitle}`;
+            const payload = {
+                notebook: notebookId,
+                path: docPath,
+                markdown: markdown,
+                tags: tags
+            };
+            try {
+                const response = await this.fetchWithGM({
+                    method: 'POST',
+                    url: `${this.config.siyuanApiUrl}/api/filetree/createDocWithMd`,
+                    headers: {
+                        'Authorization': `Token ${this.config.siyuanApiToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                     JSON.stringify(payload)
+                });
+                console.log('成功保存到思源笔记:', response.data);
+                return response.data;
+            } catch (error) {
+                console.error('保存到思源笔记失败:', error);
+                throw error;
+            }
+        },
+        doClip: async function() {
+            const titleInput = document.getElementById('clip-title-input');
+            const urlInput = document.getElementById('clip-url-input');
+            const tagsInput = document.getElementById('custom-tags-input');
+            const notebookSelect = document.getElementById('notebook-select');
+            const title = titleInput ? titleInput.value.trim() : document.title;
+            const url = urlInput ? urlInput.value.trim() : window.location.href;
+            const customTags = tagsInput ?
+                tagsInput.value.split(/[,，\s]+/).map(tag => tag.trim()).filter(tag => tag) : [];
+            const notebookId = notebookSelect ? notebookSelect.value : null;
+            // 验证必填字段
+            if (!title) {
+                Toast.show('请输入标题', 'error');
+                return;
+            }
+            if (!url) {
+                Toast.show('请输入链接', 'error');
+                return;
+            }
+            if (!notebookId) {
+                Toast.show('请选择一个笔记本', 'error');
+                return;
+            }
+            ClipperPanel.setLoading(true);
+            try {
+                // 使用Readability提取主要内容
+                const articleContent = document.documentElement.innerHTML;
+                const doc = document.implementation.createHTMLDocument('temp');
+                doc.documentElement.innerHTML = articleContent;
+                const reader = new Readability(doc);
+                const article = reader.parse();
+                if (!article || !article.content) {
+                    throw new Error('无法提取文章内容');
+                }
+                // 使用Turndown将HTML转换为Markdown
+                const turndownService = new TurndownService({
+                    headingStyle: 'atx',
+                    bulletListMarker: '-',
+                    codeBlockStyle: 'fenced'
+                });
+                const markdown = turndownService.turndown(article.content);
+                const markdownWithHeader = `# ${article.title}
+> [原文链接](${url})
+---
+${markdown}`;
+                // 调用AI生成标签（参考自定义标签）
+                const aiTags = await this.generateTagsWithLLM(article.title, article.textContent, customTags);
+                // 合并并去重标签
+                const allTags = this.mergeTags(customTags, aiTags);
+                // 保存到思源笔记
+                await this.saveToSiyuan(article.title, markdownWithHeader, allTags, url, notebookId);
+                // 保存用户选择的笔记本ID
+                const currentConfig = Config.getAll();
+                currentConfig.lastSelectedNotebookId = notebookId;
+                Config.setAll(currentConfig);
+                ClipperPanel.hide();
+                Toast.show(`剪藏成功！生成标签：${allTags}`, 'success');
+                if (this.button) {
+                    const originalText = this.button.textContent;
+                    this.button.textContent = '✅';
+                    setTimeout(() => { 
+                        this.button.textContent = originalText; 
+                    }, 2000);
+                }
+            } catch (error) {
+                console.error('剪藏失败:', error);
+                Toast.show(`剪藏失败: ${error.message}`, 'error');
+            } finally {
+                ClipperPanel.setLoading(false);
+            }
+        },
+        makeDraggable: function(element) {
+            let isDragging = false;
+            let startX, startY, initialTop, initialRight;
+            function handleStart(e) {
+                isDragging = true;
+                startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+                startY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+                const rect = element.getBoundingClientRect();
+                initialTop = rect.top;
+                initialRight = window.innerWidth - rect.right;
+                element.style.cursor = 'grabbing';
+                element.style.transition = 'none';
+            }
+            function handleMove(e) {
+                if (!isDragging) return;
+                // 使用节流优化性能
+                if (WebClipper.dragThrottle) return;
+                WebClipper.dragThrottle = requestAnimationFrame(() => {
+                    WebClipper.dragThrottle = null;
+                    e.preventDefault();
+                    const currentX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+                    const currentY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+                    const deltaY = currentY - startY;
+                    const deltaX = currentX - startX;
+                    const newTop = initialTop + deltaY;
+                    const newRight = initialRight - deltaX;
+                    element.style.top = `${newTop}px`;
+                    element.style.right = `${newRight}px`;
+                    element.style.left = 'auto';
+                    element.style.bottom = 'auto';
+                });
+            }
+            function handleEnd() {
+                if (!isDragging) return;
+                isDragging = false;
+                element.style.cursor = 'move';
+                element.style.transition = '';
+                if (WebClipper.dragThrottle) {
+                    cancelAnimationFrame(WebClipper.dragThrottle);
+                    WebClipper.dragThrottle = null;
+                }
+                const style = window.getComputedStyle(element);
+                const newPosition = { top: style.top, right: style.right };
+                WebClipper.config.buttonPosition = newPosition;
+                Config.setAll(WebClipper.config);
+            }
+            element.addEventListener('mousedown', handleStart);
+            document.addEventListener('mousemove', handleMove);
+            document.addEventListener('mouseup', handleEnd);
+            element.addEventListener('touchstart', handleStart, { passive: false });
+            document.addEventListener('touchmove', handleMove, { passive: false });
+            element.addEventListener('touchend', handleEnd);
+        },
+        createFloatingButton: function() {
+            if (document.getElementById('web-clipper-btn')) return;
+            // 添加样式
+            GM_addStyle(`
+                #web-clipper-btn {
+                    position: fixed; z-index: 2147483646; cursor: move; user-select: none;
+                    font-size: 24px; top: ${this.config.buttonPosition.top}; right: ${this.config.buttonPosition.right};
+                    width: 48px; height: 48px; border-radius: 50%;
+                    background: linear-gradient(135deg, rgba(76, 175, 80, 0.9), rgba(69, 160, 73, 0.9));
+                    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+                    color: white; display: flex; align-items: center; justify-content: center;
+                    box-shadow: 0 8px 32px -8px rgba(76, 175, 80, 0.4);
+                    transition: all 0.2s ease;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
+                #web-clipper-btn:hover {
+                    transform: scale(1.05);
+                    box-shadow: 0 12px 40px -8px rgba(76, 175, 80, 0.5);
+                    background: linear-gradient(135deg, rgba(76, 175, 80, 1), rgba(69, 160, 73, 1));
+                }
+                #web-clipper-btn:active {
+                    transform: scale(0.95);
+                }
+                @media (max-width: 768px) {
+                    #web-clipper-btn {
+                        width: 44px; height: 44px; font-size: 20px;
+                    }
+                }
+            `);
+            this.button = document.createElement('div');
+            this.button.id = 'web-clipper-btn';
+            this.button.title = '点击剪藏，双击打开设置';
+            this.button.textContent = '⚡️';
+            document.body.appendChild(this.button);
+            this.makeDraggable(this.button);
+            this.button.addEventListener('click', (e) => {
+                if (e.detail === 1) {
+                    setTimeout(() => ClipperPanel.show(), 200);
+                }
+            });
+            this.button.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                Config.showSettings();
+            });
+            console.log('剪藏按钮已创建');
         }
     };
 
-    // ===== 3. 初始化和菜单注册 =====
-    // 在 Tampermonkey 的扩展菜单中注册一个命令。
-    GM_registerMenuCommand('⚙️ 剪藏设置', () => { 
-        Config.showSettings(); // 点击菜单项时，调用 showSettings 函数。
+    // ===== 5. 初始化和菜单注册 =====
+    GM_registerMenuCommand('⚙️ 剪藏工具设置', () => { 
+        Config.showSettings(); 
     });
-
-    // 在控制台打印一条日志，方便开发者知道脚本已成功加载。
-    console.log('Miniflux 文章剪藏到思源笔记脚本已加载');
-
-    // 检查配置，如果配置不全，则自动弹出设置窗口，引导用户进行首次配置。
-    if (!Config.isComplete()) {
-        console.warn('检测到配置不完整，已弹出设置窗口。');
-        Config.showSettings();
-    }
-
-    // 调用核心上传模块的初始化函数，启动脚本的主要逻辑。
-    SiYuanUploader.init();
-
-})(); // 结束立即执行函数。
+    console.log('Web Clipper Pro (整合版) 脚本已加载');
+    WebClipper.init();
+})();
