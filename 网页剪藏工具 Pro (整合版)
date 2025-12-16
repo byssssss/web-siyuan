@@ -12,6 +12,8 @@
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @connect      *
+// @downloadURL  https://raw.githubusercontent.com/byssssss/web-siyuan/refs/heads/main/%E7%BD%91%E9%A1%B5%E5%89%AA%E8%97%8F%E5%B7%A5%E5%85%B7%20Pro%20(%E6%95%B4%E5%90%88%E7%89%88)
+// @updateURL    https://raw.githubusercontent.com/byssssss/web-siyuan/refs/heads/main/%E7%BD%91%E9%A1%B5%E5%89%AA%E8%97%8F%E5%B7%A5%E5%85%B7%20Pro%20(%E6%95%B4%E5%90%88%E7%89%88)
 // ==/UserScript==
 
 (function() {
